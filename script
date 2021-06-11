@@ -1,35 +1,68 @@
-#!/bin/bash
+#!/bin/bash -e
+
+# I'm still learning these, okay?
+trap cleanup 15
+trap cleanup 2
+trap cleanup 1
+
+command -v udisksctl >/dev/null 2>&1 || { echo >&2 "I require udisksctl but it's not installed.  Aborting."; exit 1; }
+
+cleanup ()
+{
+    if [[ -z $ARR ]]; then
+        echo "Script interrupted. Cleaning up..."
+        for MOUNTED in "${ARR[@]}"; do
+            udisksctl unmount -b "$MOUNTED"
+        done
+        echo "Done"
+    fi
+    exit
+}
+
+dryrun() {
+    if [[ ! -t 0 ]]
+    then
+        cat
+    fi
+    printf -v cmd_str '%q ' "$@"; echo "(DRYRUN) $cmd_str" >&2
+}
+
+case $1 in
+    -d | -D | debug | -debug | --debug | dry | -dry | --dry )
+        DRYRUN=dryrun
+        echo "Commands won't be executed in dryrun mode."
+        ;;
+    --no-update-grub )
+        nug=true
+        ;;
+    * )
+        DRYRUN=''
+        ;;
+esac
+
+if [[ $EUID != 0 && -z $DRYRUN ]]; then
+    echo "You need to use sudo with this command. Exiting..."
+    exit
+fi
+
+### Where the script actually starts lol
 
 IFS=','
 
-read -ra ARR <<< $(lsblk | awk '$6 ~ /part/ && ! $7{print $1}' | sed 's/[^A-Za-z0-9._-]//g' | sed -z 's/\n/,/g;s/,$//')
-printf "Found ${#ARR[@]} unmounted partitions: ${ARR[*]}\n"
+declare -a ARR
 
-declare -a MOUNTED_PARTITIONS
-
-for p in ${ARR[@]}; do
-    i=0
-    dir_a="/dev/$p"
-    dir_b="/mnt/${p}-${i}"
-    while [ -d $dir_b ]; do
-        ((i++))
-        dir_b="/mnt/${p}-${i}"
-    done
-    mkdir $dir_b
-    mount $dir_a $dir_b
-    MOUNTED_PARTITIONS+=($dir_b)
-    echo "Created temporary mount point $dir_b and mounted /dev/$p to it"
+for UNMOUNTED in `lsblk | awk '$6 == "part" && ! $7 {print $1}' | sed 's/[^A-Za-z0-9._-]//g' | sed -z 's/\n/,/g;s/,$/\n/'`; do
+    UNMOUNTED_PATH="/dev/${UNMOUNTED}"
+    $DRYRUN udisksctl mount -b "$UNMOUNTED_PATH"
+    ARR+=($UNMOUNTED_PATH)
 done
 
-case $1 in
-    -D | -d | --debug | -debug | debug)
-        true;;
-    * )
-        update-grub;;
-esac
+if [[ $nug == true ]]; then
+    echo "Skipped update-grub"
+else
+    $DRYRUN update-grub
+fi
 
-for i in ${MOUNTED_PARTITIONS[@]}; do
-    umount "$i"
-    rmdir "$i"
-    echo "Unmounted and removed $i"
+for MOUNTED in "${ARR[@]}"; do
+    $DRYRUN udisksctl unmount -b "$MOUNTED"
 done
