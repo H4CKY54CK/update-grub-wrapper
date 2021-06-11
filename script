@@ -1,0 +1,35 @@
+#!/bin/bash
+
+IFS=','
+
+read -ra ARR <<< $(lsblk | awk '$6 ~ /part/ && ! $7{print $1}' | sed 's/[^A-Za-z0-9._-]//g' | sed -z 's/\n/,/g;s/,$//')
+printf "Found ${#ARR[@]} unmounted partitions: ${ARR[*]}\n"
+
+declare -a MOUNTED_PARTITIONS
+
+for p in ${ARR[@]}; do
+    i=0
+    dir_a="/dev/$p"
+    dir_b="/mnt/${p}-${i}"
+    while [ -d $dir_b ]; do
+        ((i++))
+        dir_b="/mnt/${p}-${i}"
+    done
+    mkdir $dir_b
+    mount $dir_a $dir_b
+    MOUNTED_PARTITIONS+=($dir_b)
+    echo "Created temporary mount point $dir_b and mounted /dev/$p to it"
+done
+
+case $1 in
+    -D | -d | --debug | -debug | debug)
+        true;;
+    * )
+        update-grub;;
+esac
+
+for i in ${MOUNTED_PARTITIONS[@]}; do
+    umount "$i"
+    rmdir "$i"
+    echo "Unmounted and removed $i"
+done
